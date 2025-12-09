@@ -18,7 +18,7 @@ export default class RueTiquetonne
         this.sizes = this.experience.sizes
         this.debug = this.experience.debug
 
-        this.resource = this.resources.items.couloirModel
+        this.resource = this.resources.items.chateletModel
 
         // Debug
         if(this.debug.active)
@@ -30,6 +30,8 @@ export default class RueTiquetonne
         this.baseGeometry = {}
         this.gpgpu = {}
         this.particles = {}
+        this.multiplier = 2 
+        this.previousTime = 0;
         this.debugObject = {
             clearColor: '#29191f',
             particlesCount: 0,
@@ -42,7 +44,7 @@ export default class RueTiquetonne
         this.mapTexture = null
 
         this.setModel()
-        this.setupGeometry()
+        this.setupMultipleGeometries()
         this.setupGPUCompute()
         this.setupParticles()
         this.setupDebug()
@@ -53,6 +55,78 @@ export default class RueTiquetonne
     {
         this.model = this.resource.scene
         // this.scene.add(this.model)
+    }
+
+    setupMultipleGeometries() {
+        this.baseGeometry = {}
+
+        this.allGeometries = []
+        this.allMaterials = []
+
+        this.model.traverse((child) => {    
+            if (child.isMesh) {
+                let geometry = child.geometry.clone()
+                geometry.applyMatrix4(child.matrixWorld)
+                this.allGeometries.push(geometry)
+                
+                if (child.material && !this.allMaterials.includes(child.material)) {
+                    this.allMaterials.push(child.material)
+                }
+            }
+        })
+
+        console.log(`${this.allGeometries.length} meshes trouvés`)
+
+        this.mergedGeometry = new THREE.BufferGeometry()
+        this.positions = []
+        this.uvs = []
+
+        // Passe dans toutes les geometries et les fusionnes
+        this.allGeometries.forEach((geometry) => {
+            const positionAttribute = geometry.getAttribute('position')
+            const uvAttribute = geometry.getAttribute('uv')
+            
+            if (positionAttribute) {
+                for (let i = 0; i < positionAttribute.count; i++) {
+                    this.positions.push(
+                        positionAttribute.getX(i),
+                        positionAttribute.getY(i),
+                        positionAttribute.getZ(i)
+                    )
+                }
+            }
+            
+            if (uvAttribute) {
+                for (let i = 0; i < uvAttribute.count; i++) {
+                    this.uvs.push(uvAttribute.getX(i), uvAttribute.getY(i))
+                }
+            }
+        })
+
+        this.mergedGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(this.positions), 3))
+        if (this.uvs.length > 0) {
+            this.mergedGeometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(this.uvs), 2))
+        }
+
+        this.baseGeometry.instance = this.mergedGeometry
+        this.baseGeometry.count = this.baseGeometry.instance.attributes.position.count
+
+        console.log(`Géométrie fusionnée : ${this.baseGeometry.count} vertices`)
+
+        let mapTexture = null
+        for (let material of this.allMaterials) {
+            if (material.map && !mapTexture) {
+                mapTexture = material.map
+                break
+            }
+        }
+
+        if (!mapTexture) {
+            console.warn("Aucune texture trouvée, création d'une texture blanche par défaut.")
+            const data = new Uint8Array([255, 255, 255, 255])
+            mapTexture = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat)
+            mapTexture.needsUpdate = true
+        }
     }
 
     setupGeometry()
@@ -259,12 +333,14 @@ export default class RueTiquetonne
 
     update()
     {
-        const elapsedTime = this.time.elapsed
-        const deltaTime = this.time.delta
+        this.elapsedTime = this.time.clock.getElapsedTime()
+        this.deltaTime = this.elapsedTime - this.previousTime
+        this.previousTime = this.elapsedTime
+        
 
         // GPGPU Update
-        this.gpgpu.particlesVariable.material.uniforms.uTime.value = elapsedTime
-        this.gpgpu.particlesVariable.material.uniforms.uDeltaTime.value = deltaTime
+        this.gpgpu.particlesVariable.material.uniforms.uTime.value = this.elapsedTime
+        this.gpgpu.particlesVariable.material.uniforms.uDeltaTime.value = this.deltaTime
         this.gpgpu.computation.compute()
         
         // Update position texture in render shader

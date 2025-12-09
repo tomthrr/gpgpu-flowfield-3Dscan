@@ -38,6 +38,16 @@ export default [
         path: 'models/couloir.glb'     
     },
     {
+        name: 'kevinModel', 
+        type: 'gltfModel',
+        path: 'models/kevin.glb'     
+    },
+    {
+        name: 'chateletModel',
+        type: 'gltfModel',
+        path: 'models/mega_bouillant_chatelet_escalator.glb'     
+    },
+    {
         name: 'boatModel',
         type: 'gltfModel',
         path: 'models/model.glb'     
