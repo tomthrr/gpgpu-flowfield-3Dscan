@@ -47,6 +47,10 @@ export default class ParticlesSystem {
             this.setupDebug()
         }
         this.setupEventListeners()
+
+        // aucune particules au début 
+        this.debugObject.particlesCount = 0
+        this.updateParticles()
     }
 
     setupMultipleGeometries() {
@@ -71,58 +75,114 @@ export default class ParticlesSystem {
         console.log(`${allGeometries.length} meshes trouvés`)
         console.log(`${allMaterials.length} materials trouvés`)
 
-        this.mergeGeometries(allGeometries)
         this.extractTexture(allMaterials)
+        this.mergeGeometries(allGeometries)
     }
 
     mergeGeometries(allGeometries) {
-        const mergedGeometry = new THREE.BufferGeometry()
-        const positions = []
-        const uvs = []
+        const mergedGeometry = new THREE.BufferGeometry();
+        const positions = [];
+        const uvs = [];
 
+        let geomIndex = 0;
+        console.log("ici ::", allGeometries)
         allGeometries.forEach((geometry) => {
-            const positionAttribute = geometry.getAttribute('position')
-            const uvAttribute = geometry.getAttribute('uv')
+            const uvAttribute = geometry.getAttribute("uv");
+            const posAttribute = geometry.getAttribute("position");
 
-            if (positionAttribute) {
-                for (let i = 0; i < positionAttribute.count; i++) {
-                    positions.push(
-                        positionAttribute.getX(i),
-                        positionAttribute.getY(i),
-                        positionAttribute.getZ(i)
-                    )
+            const atlasData = this.atlasUVs[geomIndex];
+
+            for (let i = 0; i < posAttribute.count; i++) {
+                // positions
+                positions.push(
+                    posAttribute.getX(i),
+                    posAttribute.getY(i),
+                    posAttribute.getZ(i)
+                );
+
+                if (uvAttribute) {
+                    const u = uvAttribute.getX(i);
+                    const v = uvAttribute.getY(i);
+
+                    // remap vers l'atlas
+                    const U = atlasData.u0 + u * (atlasData.u1 - atlasData.u0);
+                    const V = atlasData.v0 + v * (atlasData.v1 - atlasData.v0);
+                    uvs.push(U, V);
                 }
             }
 
-            if (uvAttribute) {
-                for (let i = 0; i < uvAttribute.count; i++) {
-                    uvs.push(uvAttribute.getX(i), uvAttribute.getY(i))
-                }
-            }
-        })
+            if (!this.modelRanges) this.modelRanges = []
 
-        mergedGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3))
-        if (uvs.length > 0) {
-            mergedGeometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2))
-        }
+            this.modelRanges.push({
+                start: positions.length / 3,   // en nombre de vertices
+                count: posAttribute.count      // combien appartenait à ce modèle
+            })
 
-        this.baseGeometry.instance = mergedGeometry
-        this.baseGeometry.count = mergedGeometry.attributes.position.count
 
-        console.log(`Géométrie fusionnée : ${this.baseGeometry.count} vertices`)
+            geomIndex++;
+        });
+
+        mergedGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+        mergedGeometry.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
+
+        this.baseGeometry.instance = mergedGeometry;
+        this.baseGeometry.count = mergedGeometry.attributes.position.count;
     }
+
+    generateTextureAtlas(textures, cellSize = 1024) {
+        const count = textures.length;
+        const grid = Math.ceil(Math.sqrt(count));
+
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = grid * cellSize;
+        const ctx = canvas.getContext("2d", { alpha: true });
+        ctx.fillStyle = "rgba(0,0,0,0)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const atlasUVs = []; // pour modifier les UV ensuite
+
+        textures.forEach((tex, i) => {
+            const x = (i % grid) * cellSize;
+            const y = Math.floor(i / grid) * cellSize;
+
+            const image = tex.image;
+            ctx.drawImage(image, x, y, cellSize, cellSize);
+
+            const u0 = x / canvas.width;
+            const v0 = y / canvas.height;
+            const u1 = (x + cellSize) / canvas.width;
+            const v1 = (y + cellSize) / canvas.height;
+
+            atlasUVs.push({ u0, v0, u1, v1 });
+        });
+
+        const atlasTexture = new THREE.CanvasTexture(canvas);
+        atlasTexture.flipY = false;
+        atlasTexture.encoding = THREE.sRGBEncoding;
+        atlasTexture.needsUpdate = true;
+
+
+        return { atlasTexture, atlasUVs };
+    }
+
 
     extractTexture(allMaterials) {
         this.mapTexture = null
+        this.allTextures = [];
+
         for (let material of allMaterials) {
             console.log(material.map && !this.mapTexture)
             if (material.map && !this.mapTexture) {
                 this.mapTexture = material.map
-                break
             }
+            this.allTextures.push(material.map)
         }
 
-        console.log("final mapTexture ::", this.mapTexture)
+        console.log("allMyTextures ::", this.allTextures)
+        const { atlasTexture, atlasUVs } = this.generateTextureAtlas(this.allTextures);
+        this.mapTexture = atlasTexture;
+        this.atlasUVs = atlasUVs;
+        console.log("atlas ::", this.atlasUVs)
 
         if (!this.mapTexture) {
             console.warn("Aucune texture trouvée, création d'une texture blanche par défaut.")
@@ -262,6 +322,40 @@ export default class ParticlesSystem {
         this.scene.add(this.particles.points)
     }
 
+    spawnModel() {
+        const index = this.debugObject.availableModels.indexOf(this.debugObject.selectedModel)
+        if (index < 0) return
+
+        const range = this.modelRanges[index]
+
+        // On veut afficher ce modèle complet
+        const targetCount = range.start + range.count
+
+        // Si déjà visible, on ne fait rien
+        if (this.debugObject.particlesCount >= targetCount) return
+
+        // Animation progressive (optionnel)
+        const step = 200 // vitesse d’apparition
+        const interval = setInterval(() => {
+            this.debugObject.particlesCount += step
+
+            if (this.debugObject.particlesCount >= targetCount) {
+                this.debugObject.particlesCount = targetCount
+                clearInterval(interval)
+            }
+            const maxInfluence = 1
+            const maxStrength = 10
+            const maxFrequency = 1
+            console.log("influence ::", maxInfluence - (this.debugObject.particlesCount * maxInfluence / targetCount))
+            this.gpgpu.particlesVariable.material.uniforms.uFlowFieldInfluence.value = maxInfluence - (this.debugObject.particlesCount * maxInfluence / targetCount)
+            this.gpgpu.particlesVariable.material.uniforms.uFlowFieldStrength.value = maxStrength - (this.debugObject.particlesCount * maxStrength / targetCount)
+            this.gpgpu.particlesVariable.material.uniforms.uFlowFieldFrequency.value = maxFrequency  - (this.debugObject.particlesCount * maxFrequency / targetCount)
+
+            this.updateParticles()
+        }, 16)
+    }
+
+
     setupDebug() {
         this.debugFolder.addColor(this.debugObject, 'clearColor').onChange(() => {
             // Vous pouvez émettre un événement ou appeler une callback
@@ -301,6 +395,19 @@ export default class ParticlesSystem {
             .step(100)
             .name('Particle Count')
             .onFinishChange(() => this.updateParticles())
+
+        // --- Nouveaux paramètres Debug ---
+        this.debugObject.availableModels = this.models.map((m, i) => `Model_${i}`)
+        this.debugObject.selectedModel = this.debugObject.availableModels[0]
+
+        this.debugFolder
+            .add(this.debugObject, "selectedModel", this.debugObject.availableModels)
+            .name("Model à spawn")
+
+        this.debugFolder
+            .add({ spawn: () => this.spawnModel() }, "spawn")
+            .name("✨ Ajouter le modèle")
+
     }
 
     setupEventListeners() {

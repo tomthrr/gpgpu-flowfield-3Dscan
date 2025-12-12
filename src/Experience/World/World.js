@@ -27,14 +27,15 @@ export default class World
     setupParticlesSystem() {
         this.resourceCouloir = this.resources.items.couloirModel
         this.resourceKevin = this.resources.items.kevinModel
+        this.resourceNess = this.resources.items.nessModel
 
-        console.log(this.resourceKevin)
+        console.log("nes", this.resourceNess)
 
         this.couloirParticleSystem = new ParticlesSystem({
             scene: this.scene,
             renderer: this.renderer,
             sizes: this.sizes,
-            model: [this.resourceKevin.scene, this.resourceCouloir.scene],
+            model: [this.resourceKevin.scene, this.resourceCouloir.scene, this.resourceNess.scene],
             multiplier: 2,
             debugFolder: this.debug.active ? this.debug.ui.addFolder('Chatelet Particles') : null,
             clearColor: '#4a4a4a',

@@ -43,6 +43,11 @@ export default [
         path: 'models/kevin.glb'     
     },
     {
+        name: 'nessModel', 
+        type: 'gltfModel',
+        path: 'models/ness.glb'     
+    },
+    {
         name: 'chateletModel',
         type: 'gltfModel',
         path: 'models/mega_bouillant_chatelet_escalator.glb'     

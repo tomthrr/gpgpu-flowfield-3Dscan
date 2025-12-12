@@ -1,0 +1,194 @@
+$base-grey-color: #8F8D8D;
+
+
+*
+{
+    margin: 0;
+    padding: 0;
+}
+
+@font-face {
+    font-family: 'gridlite';
+    src: url('../public/font/gridlite-pe-variable.ttf');
+}
+
+html,
+body
+{
+    overflow: hidden;
+    font-family: gridlite, sans-serif;
+    font-variation-settings: 'wght' 900, 'BACK' 1, 'RECT' 1, 'ELSH' 3;
+}
+
+.webgl
+{
+    position: fixed;
+    top: 0;
+    left: 0;
+    outline: none;
+}
+
+#qrcode {
+    z-index: 1001;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+
+    > img {
+        transform-origin: center center;
+        display: block; // optionnel selon les cas
+    }
+}
+
+
+.overlay-container {
+    z-index: 101;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    color: $base-grey-color;
+
+    .logo-container {
+        position: absolute;
+        top: 29px;
+        left: 30px;
+
+        img {
+            width: 50px;
+            height: 50px;
+        }
+    }
+
+    .stats-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        position: absolute;
+
+        top: 30px;
+        right: 30px;
+
+        .stat {
+            font-size: 1.2rem;
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+            gap: 1rem;
+        }
+    }
+}
+
+.qrcode-container {
+    position: relative;
+
+    .qrcode {
+        margin: 1rem;
+        width: 300px;
+        height: 300px;
+        background-color: #FF578A;
+    }
+
+    .bar-horizontal, .bar-vertical {
+        background-color: $base-grey-color;
+        height: 1px;
+        width: 50px;
+    }
+
+    .top-left-deco {
+        top: 10px;
+        left: 10px;
+    }
+
+    .top-right-deco {
+        top: 10px;
+        right: 10px;
+    }
+
+    .bot-left-deco {
+        bottom: 10px;
+        left: 10px;
+    }
+
+    .bot-right-deco {
+        bottom: 10px;
+        right: 10px;    
+    }
+}
+
+/**
+ * Corner Overlay decoration
+ **/
+.bar-horizontal, .bar-vertical {
+    background-color: $base-grey-color;
+    height: 2px;
+    width: 100px;
+}
+
+.bar-horizontal {
+    transform: translateY(-1px);
+}
+
+.top-left-deco {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+
+    .wrapper {
+        display: flex;
+        flex-direction: row;
+        align-items: start;
+        justify-content: center;
+        
+        
+        .title {
+            transform: translateY(-1px);
+            background-color: $base-grey-color;
+            color: black;
+        }
+    }
+
+    .bar-vertical {
+        transform-origin: left center;
+        transform: rotate(90deg);
+    }
+}
+
+.top-right-deco {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+
+    .bar-vertical {
+        transform-origin: right center;
+        transform: rotate(-90deg);
+    }
+}
+
+.bot-left-deco {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+
+    .bar-vertical {
+        transform-origin: left center;
+        transform: rotate(-90deg);
+    }
+}
+
+.bot-right-deco {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+
+    .bar-vertical {
+        transform-origin: right center;
+        transform: rotate(90deg);
+    }
+}

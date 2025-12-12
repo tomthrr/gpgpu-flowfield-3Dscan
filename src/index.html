@@ -1,13 +1,124 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Code structuring</title>
-    <link rel="stylesheet" href="./style.css">
+    <link rel="stylesheet" href="./style.scss">
 </head>
+
 <body>
+    <div class="overlay-container">
+        <div class="top-left-deco">
+            <div class="bar-vertical"></div>
+            <div class="wrapper">
+                <div class="bar-horizontal"></div>
+                <div class="title">SOMNIUM 345-457/3034</div>
+            </div>
+        </div>
+        <div class="logo-container">
+            <img src="/img/logo.svg" alt="logo SOMNIUM" />
+        </div>
+        <div class="top-right-deco">
+            <div class="bar-vertical"></div>
+            <div class="bar-horizontal"></div>
+        </div>
+        <div class="bot-right-deco">
+            <div class="bar-vertical"></div>
+            <div class="bar-horizontal"></div>
+        </div>
+        <div class="bot-left-deco">
+            <div class="bar-vertical"></div>
+            <div class="bar-horizontal"></div>
+        </div>
+
+        <div class="stats-container">
+            <div class="stat">
+                <span>SPS</span>
+                <span>%43</span>
+            </div>
+            <div class="stat">
+                <span>VOL</span>
+                <span>%78</span>
+            </div>
+            <div class="stat">
+                <span>DRM</span>
+                <span>%66</span>
+            </div>
+            <div class="stat">
+                <span>MLG</span>
+                <span>%89</span>
+            </div>
+        </div>
+
+        <div class="qrcode-container">
+            <div class="top-left-deco">
+                <div class="bar-vertical"></div>
+                <div class="bar-horizontal"></div>
+            </div>
+            <div class="top-right-deco">
+                <div class="bar-vertical"></div>
+                <div class="bar-horizontal"></div>
+            </div>
+            <div class="bot-right-deco">
+                <div class="bar-vertical"></div>
+                <div class="bar-horizontal"></div>
+            </div>
+            <div class="bot-left-deco">
+                <div class="bar-vertical"></div>
+                <div class="bar-horizontal"></div>
+            </div>
+
+            <div class="qrcode"></div>
+        </div>
+    </div>
     <canvas class="webgl"></canvas>
+    <div id="qrcode"></div>
+
+    <button onclick="send()">Envoyer au mobile</button>
+    <div id="scene-container"></div>
     <script type="module" src="./script.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+    <script>
+        const socket = io()
+
+        QRCode.toDataURL(
+            `http://${location.hostname}:3000`,
+            {
+                color: {
+                    dark: "#000000",
+                    light: "#FF578A"
+                },
+                width: 300
+            },
+            (err, url) => {
+                const img = document.createElement("img");
+                img.src = url;
+                document.getElementById("qrcode").appendChild(img);
+            }
+        );
+
+
+        const msg = document.getElementById("msg");
+        console.log(socket)
+        socket.on("message-to-web", data => {
+            msg.innerText = "Mobile dit: " + data;
+        });
+
+        socket.on("qr-code", data => {
+            const img = document.createElement("img");
+            img.src = data;
+            console.log(data)
+            document.getElementById("qrcode").appendChild(img)
+        })
+
+        function send() {
+            console.log("send depuis web");
+            socket.emit("message-from-web", "Salut depuis le web !");
+        }
+    </script>
 </body>
+
 </html>
