@@ -28,6 +28,17 @@ body
     outline: none;
 }
 
+#btn-transition {
+    z-index: 2001;
+    position: absolute;
+    top: 20px;
+    left: 20px;
+}
+
+/**
+ * Overlay
+ **/
+
 #qrcode {
     z-index: 1001;
     position: absolute;

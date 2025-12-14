@@ -10,7 +10,7 @@
 </head>
 
 <body>
-    <div class="overlay-container">
+    <div class="overlay-container" id="overlay">
         <div class="top-left-deco">
             <div class="bar-vertical"></div>
             <div class="wrapper">
@@ -97,7 +97,9 @@
             (err, url) => {
                 const img = document.createElement("img");
                 img.src = url;
-                document.getElementById("qrcode").appendChild(img);
+                // document.getElementById("qrcode").appendChild(img);
+                document.getElementById("overlay").style.display = "none";
+
             }
         );
 

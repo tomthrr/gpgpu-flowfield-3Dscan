@@ -1,4 +1,5 @@
 uniform sampler2D uModelTexture;
+uniform float uOpacity;
 
 varying vec3 vColor;
 varying vec2 vUv;
@@ -11,9 +12,8 @@ void main()
     
     // Conversion sRGB -> Linear puis sortie
     vec4 textureColor = texture2D(uModelTexture, vUv);
-    textureColor.rgb = pow(textureColor.rgb, vec3(2.2));
 
-    gl_FragColor = vec4(textureColor.rgb, 1.0);
+    gl_FragColor = vec4(textureColor.rgb, uOpacity);
 
     #include <tonemapping_fragment>
     #include <colorspace_fragment>

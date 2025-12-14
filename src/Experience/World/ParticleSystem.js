@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import gsap from 'gsap'
 import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer.js'
 import gpgpuParticlesShader from './shaders/gpgpu/particles.glsl'
 import particlesFragmentShader from './shaders/particles/fragment.glsl'
@@ -6,439 +7,344 @@ import particlesVertexShader from './shaders/particles/vertex.glsl'
 
 export default class ParticlesSystem {
     constructor(config = {}) {
-        // Configuration
         this.scene = config.scene
         this.renderer = config.renderer
         this.sizes = config.sizes
-        this.models = Array.isArray(config.model) ? config.model : [config.model] // Soit c'est un tableau, soit un model
+        this.model = config.model // ✅ modèle d’attente UNIQUE
         this.multiplier = config.multiplier || 2
         this.debugFolder = config.debugFolder || null
 
-        // Données internes
         this.baseGeometry = {}
         this.gpgpu = {}
         this.particles = {}
-        this.mapTexture = null
-        this.maxParticles = 0
-        this.previousTime = 0
 
-        // Debug object
         this.debugObject = {
-            clearColor: config.clearColor || '#4a4a4a',
-            particlesCount: 0,
             uSize: config.uSize || 0.07,
-            uFlowFieldInfluence: 0,
-            uFlowFieldStrength: 0,
-            uFlowFieldFrequency: 0
+            uFlowFieldInfluence: 1,
+            uFlowFieldStrength: 6,
+            uFlowFieldFrequency: 0.5
         }
-
-        // Master arrays
-        this.masterParticlesUvArray = null
-        this.masterSizesArray = null
 
         this.init()
     }
 
+    /* ---------------- INIT ---------------- */
+
     init() {
-        this.setupMultipleGeometries()
+        this.setupGeometries()
         this.setupGPUCompute()
         this.setupParticles()
-        if (this.debugFolder) {
-            this.setupDebug()
-        }
-        this.setupEventListeners()
-
-        // aucune particules au début 
-        this.debugObject.particlesCount = 0
-        this.updateParticles()
+        this.setupResize()
+        if (this.debugFolder) this.setupDebug()
     }
 
-    setupMultipleGeometries() {
-        const allGeometries = []
-        const allMaterials = []
+    /* ---------------- GEOMETRY ---------------- */
 
-        this.models.map((model) => {
-            model.traverse((child) => {
-                if (child.isMesh) {
-                    let geometry = child.geometry.clone()
-                    geometry.applyMatrix4(child.matrixWorld)
-                    allGeometries.push(geometry)
+    setupGeometries() {
+        const positions = []
+        const uvs = []
 
-                    if (child.material && !allMaterials.includes(child.material)) {
-                        console.log("material child ::", child.material)
-                        allMaterials.push(child.material)
-                    }
+        this.model.traverse((child) => {
+            if (!child.isMesh) return
+
+            const geo = child.geometry.clone()
+            geo.applyMatrix4(child.matrixWorld)
+
+            const pos = geo.getAttribute('position')
+            const uv = geo.getAttribute('uv')
+
+            for (let i = 0; i < pos.count; i++) {
+                positions.push(
+                    pos.getX(i),
+                    pos.getY(i),
+                    pos.getZ(i)
+                )
+            }
+
+            if (uv) {
+                for (let i = 0; i < uv.count; i++) {
+                    uvs.push(
+                        uv.getX(i),
+                        uv.getY(i)
+                    )
                 }
-            })
+            }
         })
 
-        console.log(`${allGeometries.length} meshes trouvés`)
-        console.log(`${allMaterials.length} materials trouvés`)
+        const geometry = new THREE.BufferGeometry()
+        geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3))
+        geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2))
 
-        this.extractTexture(allMaterials)
-        this.mergeGeometries(allGeometries)
+        this.baseGeometry.instance = geometry
+        this.baseGeometry.count = geometry.attributes.position.count
+
+        this.mapTexture = this.findTexture(this.model) || this.createWhiteTexture()
+
+        console.log('Particles from waiting model:', this.baseGeometry.count)
     }
 
-    mergeGeometries(allGeometries) {
-        const mergedGeometry = new THREE.BufferGeometry();
-        const positions = [];
-        const uvs = [];
-
-        let geomIndex = 0;
-        console.log("ici ::", allGeometries)
-        allGeometries.forEach((geometry) => {
-            const uvAttribute = geometry.getAttribute("uv");
-            const posAttribute = geometry.getAttribute("position");
-
-            const atlasData = this.atlasUVs[geomIndex];
-
-            for (let i = 0; i < posAttribute.count; i++) {
-                // positions
-                positions.push(
-                    posAttribute.getX(i),
-                    posAttribute.getY(i),
-                    posAttribute.getZ(i)
-                );
-
-                if (uvAttribute) {
-                    const u = uvAttribute.getX(i);
-                    const v = uvAttribute.getY(i);
-
-                    // remap vers l'atlas
-                    const U = atlasData.u0 + u * (atlasData.u1 - atlasData.u0);
-                    const V = atlasData.v0 + v * (atlasData.v1 - atlasData.v0);
-                    uvs.push(U, V);
-                }
+    findTexture(model) {
+        let found = null
+        model.traverse((child) => {
+            if (child.isMesh && child.material?.map && !found) {
+                found = child.material.map
             }
-
-            if (!this.modelRanges) this.modelRanges = []
-
-            this.modelRanges.push({
-                start: positions.length / 3,   // en nombre de vertices
-                count: posAttribute.count      // combien appartenait à ce modèle
-            })
-
-
-            geomIndex++;
-        });
-
-        mergedGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
-        mergedGeometry.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
-
-        this.baseGeometry.instance = mergedGeometry;
-        this.baseGeometry.count = mergedGeometry.attributes.position.count;
+        })
+        return found
     }
 
-    generateTextureAtlas(textures, cellSize = 1024) {
-        const count = textures.length;
-        const grid = Math.ceil(Math.sqrt(count));
-
-        const canvas = document.createElement("canvas");
-        canvas.width = canvas.height = grid * cellSize;
-        const ctx = canvas.getContext("2d", { alpha: true });
-        ctx.fillStyle = "rgba(0,0,0,0)";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        const atlasUVs = []; // pour modifier les UV ensuite
-
-        textures.forEach((tex, i) => {
-            const x = (i % grid) * cellSize;
-            const y = Math.floor(i / grid) * cellSize;
-
-            const image = tex.image;
-            ctx.drawImage(image, x, y, cellSize, cellSize);
-
-            const u0 = x / canvas.width;
-            const v0 = y / canvas.height;
-            const u1 = (x + cellSize) / canvas.width;
-            const v1 = (y + cellSize) / canvas.height;
-
-            atlasUVs.push({ u0, v0, u1, v1 });
-        });
-
-        const atlasTexture = new THREE.CanvasTexture(canvas);
-        atlasTexture.flipY = false;
-        atlasTexture.encoding = THREE.sRGBEncoding;
-        atlasTexture.needsUpdate = true;
-
-
-        return { atlasTexture, atlasUVs };
+    createWhiteTexture() {
+        const data = new Uint8Array([255, 255, 255, 255])
+        const tex = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat)
+        tex.needsUpdate = true
+        return tex
     }
 
-
-    extractTexture(allMaterials) {
-        this.mapTexture = null
-        this.allTextures = [];
-
-        for (let material of allMaterials) {
-            console.log(material.map && !this.mapTexture)
-            if (material.map && !this.mapTexture) {
-                this.mapTexture = material.map
-            }
-            this.allTextures.push(material.map)
-        }
-
-        console.log("allMyTextures ::", this.allTextures)
-        const { atlasTexture, atlasUVs } = this.generateTextureAtlas(this.allTextures);
-        this.mapTexture = atlasTexture;
-        this.atlasUVs = atlasUVs;
-        console.log("atlas ::", this.atlasUVs)
-
-        if (!this.mapTexture) {
-            console.warn("Aucune texture trouvée, création d'une texture blanche par défaut.")
-            const data = new Uint8Array([255, 255, 255, 255])
-            this.mapTexture = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat)
-            this.mapTexture.needsUpdate = true
-        }
-    }
+    /* ---------------- GPGPU ---------------- */
 
     setupGPUCompute() {
-        const originalSize = Math.ceil(Math.sqrt(this.baseGeometry.count))
-        this.gpgpu.size = originalSize * this.multiplier
-        this.gpgpu.computation = new GPUComputationRenderer(this.gpgpu.size, this.gpgpu.size, this.renderer)
+        const size = Math.ceil(Math.sqrt(this.baseGeometry.count)) * this.multiplier
+        this.gpgpu.size = size
 
-        this.gpgpu.baseParticlesTexture = this.gpgpu.computation.createTexture()
+        this.gpgpu.computation = new GPUComputationRenderer(size, size, this.renderer)
+        this.gpgpu.baseTexture = this.gpgpu.computation.createTexture()
 
-        // Remplir avec les points existants
-        for (let i = 0; i < this.baseGeometry.count; i++) {
-            const i3 = i * 3
+        for (let i = 0; i < size * size; i++) {
             const i4 = i * 4
-
-            this.gpgpu.baseParticlesTexture.image.data[i4 + 0] = this.baseGeometry.instance.attributes.position.array[i3 + 0]
-            this.gpgpu.baseParticlesTexture.image.data[i4 + 1] = this.baseGeometry.instance.attributes.position.array[i3 + 1]
-            this.gpgpu.baseParticlesTexture.image.data[i4 + 2] = this.baseGeometry.instance.attributes.position.array[i3 + 2]
-            this.gpgpu.baseParticlesTexture.image.data[i4 + 3] = Math.random()
-        }
-
-        // Remplir le reste avec des points proches
-        for (let i = this.baseGeometry.count; i < this.gpgpu.size * this.gpgpu.size; i++) {
             const i3 = (i % this.baseGeometry.count) * 3
-            const i4 = i * 4
 
-            this.gpgpu.baseParticlesTexture.image.data[i4 + 0] = this.baseGeometry.instance.attributes.position.array[i3 + 0] + (Math.random() - 0.5) * 0.1
-            this.gpgpu.baseParticlesTexture.image.data[i4 + 1] = this.baseGeometry.instance.attributes.position.array[i3 + 1] + (Math.random() - 0.5) * 0.1
-            this.gpgpu.baseParticlesTexture.image.data[i4 + 2] = this.baseGeometry.instance.attributes.position.array[i3 + 2] + (Math.random() - 0.5) * 0.1
-            this.gpgpu.baseParticlesTexture.image.data[i4 + 3] = Math.random()
+            this.gpgpu.baseTexture.image.data[i4 + 0] =
+                this.baseGeometry.instance.attributes.position.array[i3 + 0]
+            this.gpgpu.baseTexture.image.data[i4 + 1] =
+                this.baseGeometry.instance.attributes.position.array[i3 + 1]
+            this.gpgpu.baseTexture.image.data[i4 + 2] =
+                this.baseGeometry.instance.attributes.position.array[i3 + 2]
+            this.gpgpu.baseTexture.image.data[i4 + 3] = Math.random()
         }
 
-        this.gpgpu.particlesVariable = this.gpgpu.computation.addVariable('uParticles', gpgpuParticlesShader, this.gpgpu.baseParticlesTexture)
-        this.gpgpu.computation.setVariableDependencies(this.gpgpu.particlesVariable, [this.gpgpu.particlesVariable])
+        this.gpgpu.variable = this.gpgpu.computation.addVariable(
+            'uParticles',
+            gpgpuParticlesShader,
+            this.gpgpu.baseTexture
+        )
 
-        const uniforms = this.gpgpu.particlesVariable.material.uniforms
-        uniforms.uTime = new THREE.Uniform(0)
-        uniforms.uDeltaTime = new THREE.Uniform(0)
-        uniforms.uBase = new THREE.Uniform(this.gpgpu.baseParticlesTexture)
-        uniforms.uFlowFieldInfluence = new THREE.Uniform(this.debugObject.uFlowFieldInfluence)
-        uniforms.uFlowFieldStrength = new THREE.Uniform(this.debugObject.uFlowFieldStrength)
-        uniforms.uFlowFieldFrequency = new THREE.Uniform(this.debugObject.uFlowFieldFrequency)
+        this.gpgpu.computation.setVariableDependencies(this.gpgpu.variable, [this.gpgpu.variable])
 
-        const error = this.gpgpu.computation.init()
-        if (error !== null) {
-            console.error('GPU Compute initialization error:', error)
-        }
+        const u = this.gpgpu.variable.material.uniforms
+        u.uTime = new THREE.Uniform(0)
+        u.uDeltaTime = new THREE.Uniform(0)
+        u.uBase = new THREE.Uniform(this.gpgpu.baseTexture)
+        u.uFlowFieldInfluence = new THREE.Uniform(this.debugObject.uFlowFieldInfluence)
+        u.uFlowFieldStrength = new THREE.Uniform(this.debugObject.uFlowFieldStrength)
+        u.uFlowFieldFrequency = new THREE.Uniform(this.debugObject.uFlowFieldFrequency)
+
+        this.gpgpu.computation.init()
     }
+
+    /* ---------------- PARTICLES ---------------- */
 
     setupParticles() {
-        this.maxParticles = this.gpgpu.size * this.gpgpu.size
-        this.debugObject.particlesCount = this.baseGeometry.count
+        const maxParticles = this.gpgpu.size * this.gpgpu.size
 
-        this.setupMasterUVs()
-        this.setupMasterSizes()
-        this.updateParticles()
-    }
-
-    setupMasterUVs() {
-        this.masterParticlesUvArray = new Float32Array(this.maxParticles * 2)
+        const uvArray = new Float32Array(maxParticles * 2)
         for (let y = 0; y < this.gpgpu.size; y++) {
             for (let x = 0; x < this.gpgpu.size; x++) {
                 const i = y * this.gpgpu.size + x
-                if (i >= this.maxParticles) break
-
-                const i2 = i * 2
-                const uvX = (x + 0.5) / this.gpgpu.size
-                const uvY = (y + 0.5) / this.gpgpu.size
-                this.masterParticlesUvArray[i2 + 0] = uvX
-                this.masterParticlesUvArray[i2 + 1] = uvY
+                uvArray[i * 2 + 0] = (x + 0.5) / this.gpgpu.size
+                uvArray[i * 2 + 1] = (y + 0.5) / this.gpgpu.size
             }
         }
-    }
 
-    setupMasterSizes() {
-        this.masterSizesArray = new Float32Array(this.maxParticles)
-        for (let i = 0; i < this.maxParticles; i++) {
-            this.masterSizesArray[i] = Math.random()
-        }
-    }
+        const sizeArray = new Float32Array(maxParticles)
+        for (let i = 0; i < maxParticles; i++) sizeArray[i] = Math.random()
 
-    updateParticles() {
-        if (this.particles.points) {
-            this.particles.geometry.dispose()
-            this.particles.material.dispose()
-            this.scene.remove(this.particles.points)
-        }
+        const geometry = new THREE.BufferGeometry()
+        geometry.setDrawRange(0, this.baseGeometry.count)
 
-        const count = this.debugObject.particlesCount
+        geometry.setAttribute('aParticlesUv', new THREE.BufferAttribute(uvArray, 2))
+        geometry.setAttribute('aSize', new THREE.BufferAttribute(sizeArray, 1))
+        geometry.setAttribute(
+            'aUv',
+            new THREE.BufferAttribute(this.baseGeometry.instance.attributes.uv.array, 2)
+        )
 
-        this.particles.geometry = new THREE.BufferGeometry()
-        this.particles.geometry.setDrawRange(0, count)
-
-        // GPGPU UVs
-        this.particles.geometry.setAttribute('aParticlesUv', new THREE.BufferAttribute(this.masterParticlesUvArray.slice(0, count * 2), 2))
-
-        // Random Sizes
-        this.particles.geometry.setAttribute('aSize', new THREE.BufferAttribute(this.masterSizesArray.slice(0, count), 1))
-
-        // Model UVs avec wrapping
-        if (this.baseGeometry.instance.attributes.uv) {
-            const modelUvArray = new Float32Array(count * 2)
-            const originalUvArray = this.baseGeometry.instance.attributes.uv.array
-
-            for (let i = 0; i < count; i++) {
-                const wrappedIndex = i % this.baseGeometry.count
-                const i2 = i * 2
-                const wrappedI2 = wrappedIndex * 2
-
-                modelUvArray[i2 + 0] = originalUvArray[wrappedI2 + 0]
-                modelUvArray[i2 + 1] = originalUvArray[wrappedI2 + 1]
-            }
-
-            this.particles.geometry.setAttribute('aUv', new THREE.BufferAttribute(modelUvArray, 2))
-        }
-
-        // Material
-        this.particles.material = new THREE.ShaderMaterial({
+        const material = new THREE.ShaderMaterial({
             vertexShader: particlesVertexShader,
             fragmentShader: particlesFragmentShader,
+            transparent: true,
             uniforms: {
                 uSize: new THREE.Uniform(this.debugObject.uSize),
-                uResolution: new THREE.Uniform(new THREE.Vector2(this.sizes.width * this.sizes.pixelRatio, this.sizes.height * this.sizes.pixelRatio)),
+                uOpacity: new THREE.Uniform(1),
+                uResolution: new THREE.Uniform(
+                    new THREE.Vector2(
+                        this.sizes.width * this.sizes.pixelRatio,
+                        this.sizes.height * this.sizes.pixelRatio
+                    )
+                ),
                 uParticlesTexture: new THREE.Uniform(),
                 uModelTexture: new THREE.Uniform(this.mapTexture)
             }
         })
 
-        // Mesh
-        this.particles.points = new THREE.Points(this.particles.geometry, this.particles.material)
+        this.particles.points = new THREE.Points(geometry, material)
+        this.particles.geometry = geometry
+        this.particles.material = material
+
         this.scene.add(this.particles.points)
     }
 
-    spawnModel() {
-        const index = this.debugObject.availableModels.indexOf(this.debugObject.selectedModel)
-        if (index < 0) return
+    /* ---------------- TRANSITION ---------------- */
 
-        const range = this.modelRanges[index]
+    transitionToModel(targetModel) {
+        console.log(targetModel)
+        if (!targetModel) return
 
-        // On veut afficher ce modèle complet
-        const targetCount = range.start + range.count
-
-        // Si déjà visible, on ne fait rien
-        if (this.debugObject.particlesCount >= targetCount) return
-
-        // Animation progressive (optionnel)
-        const step = 200 // vitesse d’apparition
-        const interval = setInterval(() => {
-            this.debugObject.particlesCount += step
-
-            if (this.debugObject.particlesCount >= targetCount) {
-                this.debugObject.particlesCount = targetCount
-                clearInterval(interval)
-            }
-            const maxInfluence = 1
-            const maxStrength = 10
-            const maxFrequency = 1
-            console.log("influence ::", maxInfluence - (this.debugObject.particlesCount * maxInfluence / targetCount))
-            this.gpgpu.particlesVariable.material.uniforms.uFlowFieldInfluence.value = maxInfluence - (this.debugObject.particlesCount * maxInfluence / targetCount)
-            this.gpgpu.particlesVariable.material.uniforms.uFlowFieldStrength.value = maxStrength - (this.debugObject.particlesCount * maxStrength / targetCount)
-            this.gpgpu.particlesVariable.material.uniforms.uFlowFieldFrequency.value = maxFrequency  - (this.debugObject.particlesCount * maxFrequency / targetCount)
-
-            this.updateParticles()
-        }, 16)
+        gsap.timeline()
+            .to(this.particles.material.uniforms.uOpacity, {
+                value: 0,
+                duration: 4,
+                ease: 'power2.inOut'
+            })
+            // transition to new model
+            .add(() => {
+                this.replaceGeometry(targetModel)
+            })
+            // effect after transition
+            .to(this.particles.material.uniforms.uOpacity, {
+                value: 1,
+                duration: 0.8,
+                ease: 'power2.out'
+            })
+            .to(this.gpgpu.variable.material.uniforms.uFlowFieldInfluence, {
+                value: 0,
+                duration: 4,
+                ease: 'power2.out'
+            })
+            .to(this.gpgpu.variable.material.uniforms.uFlowFieldStrength, {
+                value: 0,
+                duration: 4,
+                ease: 'power2.out'
+            }, "<")
+            .to(this.gpgpu.variable.material.uniforms.uFlowFieldFrequency, {
+                value: 0,
+                duration: 4,
+                ease: 'power2.out'
+            }, "<")
     }
 
-
-    setupDebug() {
-        this.debugFolder.addColor(this.debugObject, 'clearColor').onChange(() => {
-            // Vous pouvez émettre un événement ou appeler une callback
+    replaceGeometry(model) {
+        const positions = []
+        const uvs = []
+        
+        model.traverse((child) => {
+            if (!child.isMesh) return
+            const geo = child.geometry.clone()
+            geo.applyMatrix4(child.matrixWorld)
+            const pos = geo.getAttribute('position')
+            const uv = geo.getAttribute('uv')
+            
+            for (let i = 0; i < pos.count; i++) {
+                positions.push(pos.getX(i), pos.getY(i), pos.getZ(i))
+            }
+            
+            if (uv) {
+                for (let i = 0; i < uv.count; i++) {
+                    uvs.push(uv.getX(i), uv.getY(i))
+                }
+            }
         })
 
-        this.debugFolder.add(this.debugObject, 'uSize')
-            .min(0)
-            .max(1)
-            .step(0.001)
-            .onChange(() => {
-                if (this.particles.material) {
-                    this.particles.material.uniforms.uSize.value = this.debugObject.uSize
-                }
-            })
+        const maxParticles = this.gpgpu.size * this.gpgpu.size
+        const newCount = Math.min(positions.length / 3, maxParticles)
 
-        this.debugFolder.add(this.gpgpu.particlesVariable.material.uniforms.uFlowFieldInfluence, 'value')
-            .min(0)
-            .max(1)
-            .step(0.001)
-            .name('uFlowfieldInfluence')
-
-        this.debugFolder.add(this.gpgpu.particlesVariable.material.uniforms.uFlowFieldStrength, 'value')
-            .min(0)
-            .max(10)
-            .step(0.001)
-            .name('uFlowfieldStrength')
-
-        this.debugFolder.add(this.gpgpu.particlesVariable.material.uniforms.uFlowFieldFrequency, 'value')
-            .min(0)
-            .max(1)
-            .step(0.001)
-            .name('uFlowfieldFrequency')
-
-        this.debugFolder.add(this.debugObject, 'particlesCount')
-            .min(100)
-            .max(this.maxParticles)
-            .step(100)
-            .name('Particle Count')
-            .onFinishChange(() => this.updateParticles())
-
-        // --- Nouveaux paramètres Debug ---
-        this.debugObject.availableModels = this.models.map((m, i) => `Model_${i}`)
-        this.debugObject.selectedModel = this.debugObject.availableModels[0]
-
-        this.debugFolder
-            .add(this.debugObject, "selectedModel", this.debugObject.availableModels)
-            .name("Model à spawn")
-
-        this.debugFolder
-            .add({ spawn: () => this.spawnModel() }, "spawn")
-            .name("✨ Ajouter le modèle")
-
-    }
-
-    setupEventListeners() {
-        this.sizes.on('resize', () => {
-            if (this.particles.material) {
-                this.particles.material.uniforms.uResolution.value.set(
-                    this.sizes.width * this.sizes.pixelRatio,
-                    this.sizes.height * this.sizes.pixelRatio
-                )
+        // Remplissage complet du buffer baseTexture
+        for (let i = 0; i < maxParticles; i++) {
+            const i3 = i * 3
+            const i4 = i * 4
+            if (i < newCount) {
+                this.gpgpu.baseTexture.image.data[i4 + 0] = positions[i3 + 0]
+                this.gpgpu.baseTexture.image.data[i4 + 1] = positions[i3 + 1]
+                this.gpgpu.baseTexture.image.data[i4 + 2] = positions[i3 + 2]
+            } else {
+                // Remplir le reste avec positions proches de zéro (ou random)
+                this.gpgpu.baseTexture.image.data[i4 + 0] = 0
+                this.gpgpu.baseTexture.image.data[i4 + 1] = 0
+                this.gpgpu.baseTexture.image.data[i4 + 2] = 0
             }
-        })  
+            this.gpgpu.baseTexture.image.data[i4 + 3] = Math.random()
+        }
+
+        this.gpgpu.baseTexture.needsUpdate = true
+        
+        // Update UV attribute with new model's UVs
+        if (uvs.length > 0) {
+            const maxUvs = maxParticles * 2
+            const newUvArray = new Float32Array(maxUvs)
+            
+            // Fill with new model UVs
+            for (let i = 0; i < Math.min(uvs.length, maxUvs); i++) {
+                newUvArray[i] = uvs[i]
+            }
+            
+            // Remove old attribute and add new one
+            this.particles.geometry.deleteAttribute('aUv')
+            this.particles.geometry.setAttribute('aUv', new THREE.BufferAttribute(newUvArray, 2))
+        }
+        
+        // Update texture from the new model
+        const newTexture = this.findTexture(model) || this.mapTexture
+        this.mapTexture = newTexture
+        this.particles.material.uniforms.uModelTexture.value = newTexture
+        
+        // Update draw range
+        this.particles.geometry.setDrawRange(0, newCount)
+
+        console.log('Transition to model → particles:', newCount)
     }
+
+
+    /* ---------------- UPDATE ---------------- */
 
     update(elapsedTime, deltaTime) {
-        // GPGPU Update
-        this.gpgpu.particlesVariable.material.uniforms.uTime.value = elapsedTime
-        this.gpgpu.particlesVariable.material.uniforms.uDeltaTime.value = deltaTime
+        this.gpgpu.variable.material.uniforms.uTime.value = elapsedTime
+        this.gpgpu.variable.material.uniforms.uDeltaTime.value = deltaTime
+
         this.gpgpu.computation.compute()
 
-        // Update position texture
-        if (this.particles.material) {
-            this.particles.material.uniforms.uParticlesTexture.value = this.gpgpu.computation.getCurrentRenderTarget(this.gpgpu.particlesVariable).texture
-        }
+        this.particles.material.uniforms.uParticlesTexture.value =
+            this.gpgpu.computation.getCurrentRenderTarget(this.gpgpu.variable).texture
     }
 
-    dispose() {
-        if (this.particles.points) {
-            this.particles.geometry.dispose()
-            this.particles.material.dispose()
-            this.scene.remove(this.particles.points)
-        }
-        this.gpgpu.computation.dispose()
+    /* ---------------- RESIZE ---------------- */
+
+    setupResize() {
+        this.sizes.on('resize', () => {
+            this.particles.material.uniforms.uResolution.value.set(
+                this.sizes.width * this.sizes.pixelRatio,
+                this.sizes.height * this.sizes.pixelRatio
+            )
+        })
+    }
+
+    /* ---------------- DEBUG ---------------- */
+
+    setupDebug() {
+        this.debugFolder
+            .add(this.debugObject, 'uSize', 0, 1, 0.001)
+            .onChange(() => {
+                this.particles.material.uniforms.uSize.value = this.debugObject.uSize
+            })
+
+        this.debugFolder
+            .add(this.gpgpu.variable.material.uniforms.uFlowFieldInfluence, 'value', 0, 1, 0.001)
+            .name('Flow Influence')
+
+        this.debugFolder
+            .add(this.gpgpu.variable.material.uniforms.uFlowFieldStrength, 'value', 0, 10, 0.001)
+            .name('Flow Strength')
+
+        this.debugFolder
+            .add(this.gpgpu.variable.material.uniforms.uFlowFieldFrequency, 'value', 0, 1, 0.001)
+            .name('Flow Frequency')
     }
 }
